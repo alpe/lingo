@@ -280,3 +280,12 @@ func (m *lazyBodyCapturerWriteTo) WriteTo(w io.Writer) (int64, error) {
 	m.allRead = true
 	return n, err
 }
+
+// LimitBodySizeMiddleware is an HTTP middleware that limits the size of the request body.
+func LimitBodySizeMiddleware(proxyHandler http.Handler, bodySizeLimit int64) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		// body limit middleware
+		request.Body = http.MaxBytesReader(writer, request.Body, bodySizeLimit)
+		proxyHandler.ServeHTTP(writer, request)
+	})
+}

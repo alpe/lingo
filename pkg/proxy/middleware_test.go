@@ -173,6 +173,46 @@ func TestLazyBodyCapturer(t *testing.T) {
 	require.False(t, ok)
 }
 
+func TestLimitBodySizeMiddleware(t *testing.T) {
+	readAllHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := io.ReadAll(r.Body); err != nil {
+			require.IsType(t, err, &http.MaxBytesError{})
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+
+	const bodyLimit = 100
+	specs := map[string]struct {
+		body     string
+		expected int
+	}{
+		"body should pass when size is at limit": {
+			body:     strings.Repeat("a", bodyLimit),
+			expected: 200,
+		},
+		"body should fail when size is over limit": {
+			body:     strings.Repeat("a", bodyLimit+1),
+			expected: 413,
+		},
+	}
+
+	for name, spec := range specs {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader([]byte(spec.body)))
+
+			limitBodySize := LimitBodySizeMiddleware(readAllHandler, bodyLimit)
+			gotResp := httptest.NewRecorder()
+			req, err := http.NewRequest("GET", "/", strings.NewReader(spec.body))
+			require.NoError(t, err)
+			limitBodySize.ServeHTTP(gotResp, req)
+
+			require.Equal(t, spec.expected, gotResp.Code)
+		})
+	}
+}
+
 func counterValue(t *testing.T, counter prometheus.Counter) float64 {
 	registry := prometheus.NewPedanticRegistry()
 	registry.MustRegister(counter)
