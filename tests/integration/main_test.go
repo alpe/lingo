@@ -103,13 +103,10 @@ func TestMain(m *testing.M) {
 	autoscaler.ConcurrencyPerReplica = concurrencyPerReplica
 	autoscaler.Endpoints = endpointManager
 	go autoscaler.Start()
-
-	handler := &proxy.Handler{
-		Deployments: deploymentManager,
-		Endpoints:   endpointManager,
-		Queues:      queueManager,
-	}
-	testServer = httptest.NewServer(proxy.NewRetryMiddleware(3, handler))
+	var handler http.Handler = proxy.NewHandler(deploymentManager, endpointManager, queueManager)
+	handler = proxy.NewRetryMiddleware(3, handler)
+	handler = proxy.LimitBodySizeMiddleware(handler, 1024)
+	testServer = httptest.NewServer(handler)
 	defer testServer.Close()
 
 	go func() {

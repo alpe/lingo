@@ -57,6 +57,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// TODO: Only parse model for paths that would have a model.
 	modelName, proxyRequest, err = parseModel(r)
 	if err != nil || modelName == "" {
+		var mbErr *http.MaxBytesError
+		if errors.As(err, &mbErr) {
+			log.Printf("error reading model from request body: %v", err)
+			w.WriteHeader(http.StatusRequestEntityTooLarge)
+			_, _ = w.Write([]byte(fmt.Sprintf("body content must not exceed :%d ", mbErr.Limit)))
+			return
+		}
 		modelName = "unknown"
 		log.Printf("error reading model from request body: %v", err)
 		w.WriteHeader(http.StatusBadRequest)

@@ -72,12 +72,14 @@ func run() error {
 	var probeAddr string
 	var concurrencyPerReplica int
 	var maxRetriesOnErr int
+	var bodySizeLimit int64
 
 	flag.StringVar(&metricsAddr, "metrics-bind-address", ":8082", "The address the metric endpoint binds to.")
 	flag.StringVar(&probeAddr, "health-probe-bind-address", ":8081", "The address the probe endpoint binds to.")
 	flag.IntVar(&concurrencyPerReplica, "concurrency", concurrency, "the number of simultaneous requests that can be processed by each replica")
 	flag.IntVar(&scaleDownDelay, "scale-down-delay", scaleDownDelay, "seconds to wait before scaling down")
 	flag.IntVar(&maxRetriesOnErr, "max-retries", 0, "max number of retries on a http error code: 502,503,504")
+	flag.Int64Var(&bodySizeLimit, "max-body-size", 64*1024, "max number of bytes allowed for a request body")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -157,6 +159,7 @@ func run() error {
 	proxy.MustRegister(metricsRegistry)
 	var proxyHandler http.Handler = proxy.NewHandler(deploymentManager, endpointManager, queueManager)
 	proxyHandler = proxy.NewRetryMiddleware(maxRetriesOnErr, proxyHandler)
+	proxyHandler = proxy.LimitBodySizeMiddleware(proxyHandler, bodySizeLimit)
 	proxyServer := &http.Server{Addr: ":8080", Handler: proxyHandler}
 
 	statsHandler := &stats.Handler{
