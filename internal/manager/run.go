@@ -30,6 +30,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
+	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	kubeaiv1 "github.com/substratusai/kubeai/api/k8s/v1"
@@ -66,7 +68,7 @@ func init() {
 	// AddToScheme in init() to allow tests to use the same Scheme before calling Run().
 	utilruntime.Must(clientgoscheme.AddToScheme(Scheme))
 	utilruntime.Must(kubeaiv1.AddToScheme(Scheme))
-
+	utilruntime.Must(lwsv1.AddToScheme(Scheme))
 }
 
 // Run starts all components of the system and blocks until they complete.

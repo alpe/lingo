@@ -21,6 +21,8 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -110,13 +112,24 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res 
 	}
 
 	if model.DeletionTimestamp != nil {
-		// Get rid of all Pods for the Model.
-		// This should help avoid any issues with cache cleanup.
-		if err := r.DeleteAllOf(ctx, &corev1.Pod{}, client.InNamespace(model.Namespace), client.MatchingLabels{
-			kubeaiv1.PodModelLabel: model.Name,
-		}); err != nil {
-			if !apierrors.IsNotFound(err) {
-				return ctrl.Result{}, fmt.Errorf("deleting all pods: %w", err)
+		// todo (Alex): ensure this works with lws;
+		if modelConfig.LWSConfig != nil {
+			// todo: move to lsw plan
+			// Get rid of all leader worker sets for the Model.
+			if err := r.DeleteAllOf(ctx, &lwsv1.LeaderWorkerSet{}, client.InNamespace(model.Namespace), client.MatchingLabels{
+				kubeaiv1.PodModelLabel: model.Name,
+			}); err != nil && !apierrors.IsNotFound(err) {
+				return ctrl.Result{}, fmt.Errorf("deleting all LWS: %w", err)
+			}
+		} else {
+			// Get rid of all Pods for the Model.
+			// This should help avoid any issues with cache cleanup.
+			if err := r.DeleteAllOf(ctx, &corev1.Pod{}, client.InNamespace(model.Namespace), client.MatchingLabels{
+				kubeaiv1.PodModelLabel: model.Name,
+			}); err != nil {
+				if !apierrors.IsNotFound(err) {
+					return ctrl.Result{}, fmt.Errorf("deleting all pods: %w", err)
+				}
 			}
 		}
 		if model.Spec.CacheProfile != "" {
@@ -145,8 +158,8 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res 
 		}
 	}
 
-	allPods := &corev1.PodList{}
-	if err := r.List(ctx, allPods, client.InNamespace(model.Namespace), client.MatchingLabels{
+	observedPods := &corev1.PodList{}
+	if err := r.List(ctx, observedPods, client.InNamespace(model.Namespace), client.MatchingLabels{
 		kubeaiv1.PodModelLabel: model.Name,
 	}); err != nil {
 		return ctrl.Result{}, fmt.Errorf("listing all node pools: %w", err)
@@ -154,12 +167,12 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res 
 
 	// Summarize all pods.
 	var readyPods int32
-	for _, pod := range allPods.Items {
+	for _, pod := range observedPods.Items {
 		if k8sutils.PodIsReady(&pod) {
 			readyPods++
 		}
 	}
-	model.Status.Replicas.All = int32(len(allPods.Items))
+	model.Status.Replicas.All = int32(len(observedPods.Items))
 	model.Status.Replicas.Ready = readyPods
 
 	scaled := false
@@ -168,26 +181,24 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res 
 			// Slow things down to wait for caches to sync.
 			// This is important because the pod plan has some calculations that
 			// assume the cache is up to date.
-			// TODO: Use "epectations" instead of a wait - see the ReplicaSet controller.
+			// TODO: Use "expectations" instead of a wait - see the ReplicaSet controller.
 			time.Sleep(3 * time.Second)
 		}
 	}()
 
-	plan, err := r.calculatePodPlan(allPods, model, modelConfig)
+	plan, err := r.calculatePodPlan(observedPods, model, modelConfig)
 	if err != nil {
 		log.Error(err, "Failed to calculate pod plan")
 		return ctrl.Result{}, nil
 	}
 
-	if plan.containsActions() {
-		var err error
-		scaled, err = plan.execute(ctx, r.Client, r.Scheme)
-		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("executing pod plan: %w", err)
-		}
+	addedPods, deletedPods, err := plan.execute(ctx, r.Client, r.Scheme)
+	scaled = len(addedPods) != 0 || len(deletedPods) != 0 // must be set before return for the deferred func
+	if err != nil {
+		return ctrl.Result{}, fmt.Errorf("executing pod plan: %w", err)
 	}
-
-	if err := r.reconcileAdapters(ctx, plan.toRemain, model.Spec.Adapters); err != nil {
+	runningPods := append(diff(observedPods, deletedPods), addedPods...)
+	if err := r.reconcileAdapters(ctx, runningPods, model.Spec.Adapters); err != nil {
 		if errors.Is(err, errReturnEarly) {
 			return ctrl.Result{}, nil
 		}
@@ -195,6 +206,20 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res 
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func diff(allPods *corev1.PodList, deletedPods []*corev1.Pod) []*corev1.Pod {
+	toRemain := make([]*corev1.Pod, len(allPods.Items)) // not adding created pods here to let cache sync
+	for i, pod := range allPods.Items {
+		toRemain[i] = &pod
+	}
+	for _, deletedPod := range deletedPods {
+		i := slices.IndexFunc(toRemain, func(p *corev1.Pod) bool { return p.Name == deletedPod.Name })
+		if i >= 0 {
+			toRemain = slices.Delete(toRemain, i, i+1)
+		}
+	}
+	return toRemain
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -250,8 +275,15 @@ func (r *ModelReconciler) annotationsForModel(m *kubeaiv1.Model) map[string]stri
 type ModelConfig struct {
 	config.CacheProfile
 	config.ResourceProfile
-	Image  string
-	Source modelSource
+	Image     string
+	Source    modelSource
+	LWSConfig *LWSConfig
+}
+
+// LWSConfig Leader worker set config
+type LWSConfig struct {
+	tensorParallel int
+	groupSize      int // pipeline parallel
 }
 
 func (r *ModelReconciler) getModelConfig(model *kubeaiv1.Model) (ModelConfig, error) {
@@ -271,16 +303,24 @@ func (r *ModelReconciler) getModelConfig(model *kubeaiv1.Model) (ModelConfig, er
 		result.CacheProfile = cacheProfile
 	}
 
+	var (
+		name     string
+		multiple int
+	)
 	split := strings.Split(model.Spec.ResourceProfile, ":")
-	if len(split) != 2 {
+	if len(split) != 2 && len(split) != 3 {
 		return result, fmt.Errorf("invalid resource profile: %q, should match <name>:<multiple>, example: nvidia-gpu-l4:2", model.Spec.ResourceProfile)
 	}
-	name := split[0]
-	multiple, err := strconv.Atoi(split[1])
-	if err != nil {
+	name = split[0]
+	if multiple, err = strconv.Atoi(split[1]); err != nil {
 		return result, fmt.Errorf("invalid multiple in resource profile multiple: %q: %w", split[1], err)
 	}
-
+	if len(split) == 3 {
+		result.LWSConfig = &LWSConfig{tensorParallel: multiple} // todo (Alex): revisit. not sure if this is too simple
+		if result.LWSConfig.groupSize, err = strconv.Atoi(split[2]); err != nil {
+			return result, fmt.Errorf("invalid group size in resource profile multiple: %q: %w", split[2], err)
+		}
+	}
 	profile, ok := r.ResourceProfiles[name]
 	if !ok {
 		return result, fmt.Errorf("resource profile not found: %q", name)

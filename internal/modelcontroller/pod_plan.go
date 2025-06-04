@@ -18,6 +18,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
+type ExecutablePlan interface {
+	execute(ctx context.Context, client client.Client, scheme *runtime.Scheme) (added, removed []*corev1.Pod, err error)
+}
+
 // calculatePodPlan calculates the Pod plan for the given Model.
 // It assumes the list of Pods represents an accurate snapshot of the current state.
 // It returns a Pod plan that contains Pods to create and delete.
@@ -25,7 +29,10 @@ import (
 // - Adds a surge Pod
 // - Recreates any out-of-date Pod that is not Ready immediately
 // - Waits for all Pods to be Ready before recreating any out-of-date Pods that are Ready
-func (r *ModelReconciler) calculatePodPlan(allPods *corev1.PodList, model *kubeaiv1.Model, modelConfig ModelConfig) (*podPlan, error) {
+func (r *ModelReconciler) calculatePodPlan(allPods *corev1.PodList, model *kubeaiv1.Model, modelConfig ModelConfig) (ExecutablePlan, error) {
+	if modelConfig.LWSConfig != nil {
+		return r.calculateLWSPlan(allPods, model, modelConfig)
+	}
 	var podForModel *corev1.Pod
 
 	switch model.Spec.Engine {
@@ -50,18 +57,11 @@ func (r *ModelReconciler) calculatePodPlan(allPods *corev1.PodList, model *kubea
 	var (
 		readyAll  int
 		outOfDate []corev1.Pod
-		remainder = make(map[string]*corev1.Pod)
 	)
-
-	podKey := func(p corev1.Pod) string {
-		return p.Namespace + "/" + p.Name
-	}
 
 	sortPodsByDeletionOrder(allPods.Items, expectedHash)
 
 	for _, p := range allPods.Items {
-		remainder[podKey(p)] = &p
-
 		upToDate := k8sutils.GetLabel(&p, kubeaiv1.PodHashLabel) == expectedHash
 
 		if k8sutils.PodIsReady(&p) {
@@ -79,7 +79,6 @@ func (r *ModelReconciler) calculatePodPlan(allPods *corev1.PodList, model *kubea
 		toDelete []*corev1.Pod
 	)
 	appendToDelete := func(p corev1.Pod) {
-		delete(remainder, podKey(p))
 		toDelete = append(toDelete, &p)
 	}
 
@@ -141,16 +140,10 @@ func (r *ModelReconciler) calculatePodPlan(allPods *corev1.PodList, model *kubea
 		}
 	}
 
-	toRemain := make([]*corev1.Pod, 0, len(remainder))
-	for _, pod := range remainder {
-		toRemain = append(toRemain, pod)
-	}
-
 	return &podPlan{
 		model:    model,
 		toCreate: toCreate,
 		toDelete: toDelete,
-		toRemain: toRemain,
 		details:  details,
 	}, nil
 }
@@ -159,22 +152,17 @@ type podPlan struct {
 	model    *kubeaiv1.Model
 	toCreate []*corev1.Pod
 	toDelete []*corev1.Pod
-	toRemain []*corev1.Pod
 	details  []string
 }
 
-func (pp *podPlan) containsActions() bool {
-	return len(pp.toCreate) > 0 || len(pp.toDelete) > 0
-}
-
 // execute returns true if a Pod was created or deleted.
-func (pp *podPlan) execute(ctx context.Context, client client.Client, scheme *runtime.Scheme) (bool, error) {
+func (pp *podPlan) execute(ctx context.Context, client client.Client, scheme *runtime.Scheme) (added, removed []*corev1.Pod, err error) {
 	log := log.FromContext(ctx)
-
 	detailsCSV := strings.Join(pp.details, ", ")
 	log.Info("Executing Pod plan", "modelName", pp.model.Name, "details", detailsCSV)
-
-	var changed bool
+	if len(pp.toCreate) == 0 && len(pp.toDelete) == 0 {
+		return nil, nil, nil
+	}
 
 	// Delete before create to avoid unnecessary Node scale-ups.
 	for _, pod := range pp.toDelete {
@@ -187,27 +175,25 @@ func (pp *podPlan) execute(ctx context.Context, client client.Client, scheme *ru
 			if apierrors.IsNotFound(err) {
 				log.Info("Pod already deleted", "podName", pod.Name)
 			} else {
-				return changed, fmt.Errorf("deleting pod: %w", err)
+				return nil, nil, fmt.Errorf("deleting pod: %w", err)
 			}
 		}
-		changed = true
 	}
 
 	for _, pod := range pp.toCreate {
 		if err := ctrl.SetControllerReference(pp.model, pod, scheme); err != nil {
-			return changed, fmt.Errorf("setting controller reference: %w", err)
+			return nil, nil, fmt.Errorf("setting controller reference: %w", err)
 		}
 		if err := client.Create(ctx, pod, k8sutils.DefaultCreateOptions()); err != nil {
 			if apierrors.IsAlreadyExists(err) {
 				log.Info("Pod already exists", "podName", pod.Name)
 			} else {
-				return changed, fmt.Errorf("creating pod: %w", err)
+				return nil, nil, fmt.Errorf("creating pod: %w", err)
 			}
 		}
-		changed = true
 	}
 
-	return changed, nil
+	return pp.toCreate, pp.toDelete, nil
 }
 
 // sortPodsByDeletionOrder ensures Pods that are to be deleted/recreated

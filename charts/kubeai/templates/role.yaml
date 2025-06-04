@@ -128,3 +128,28 @@ rules:
   - update
   - patch
   - delete
+# leader worker set
+- apiGroups:
+    - ""
+  resources:
+    - services
+  verbs:
+    - create
+    - delete
+    - get
+    - list
+    - patch
+    - update
+    - watch
+- apiGroups:
+    - "leaderworkerset.x-k8s.io"
+  resources:
+    - leaderworkersets
+  verbs:
+    - create
+    - delete
+    - get
+    - list
+    - patch
+    - update
+    - watch

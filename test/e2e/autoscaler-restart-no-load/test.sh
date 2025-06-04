@@ -3,6 +3,14 @@
 source $REPO_DIR/test/e2e/common.sh
 
 model="opt-125m-cpu"
+function cleanup() {
+  kubectl delete configmap k6 || true
+  kubectl delete -f $TEST_DIR/k6-pod.yaml || true
+  kubectl delete -f $TEST_DIR/model.yaml || true
+  kubectl delete pods -l app.kubernetes.io/name=kubeai || true
+}
+
+trap cleanup EXIT
 
 # Run a constant-user load generation pod.
 # This should trigger the autoscaler to scale up the model.

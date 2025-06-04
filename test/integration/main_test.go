@@ -80,7 +80,7 @@ func TestMain(m *testing.M) {
 
 	// Setup Kubernetes environment.
 	testEnv = &envtest.Environment{
-		CRDDirectoryPaths:     []string{"../../charts/kubeai/templates/crds"},
+		CRDDirectoryPaths:     []string{"../../charts/kubeai/templates/crds", "external/crds"},
 		ErrorIfCRDPathMissing: true,
 	}
 	var err error

@@ -1,10 +1,19 @@
 #!/bin/bash
 
-source $REPO_DIR/test/e2e/common.sh
+set -e
+
+source "$REPO_DIR"/test/e2e/common.sh
 
 models_release="kubeai-models"
 
-helm install $models_release $REPO_DIR/charts/models -f - <<EOF
+cleanup() {
+    echo "Cleaning up resources..."
+    helm uninstall $models_release || true
+}
+
+trap cleanup EXIT
+
+helm install $models_release "$REPO_DIR"/charts/models -f - <<EOF
 catalog:
   deepseek-r1-1.5b-cpu:
     enabled: true

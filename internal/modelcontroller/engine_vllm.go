@@ -40,7 +40,7 @@ func (r *ModelReconciler) vLLMPodForModel(m *kubeaiv1.Model, c ModelConfig) *cor
 	}
 	args = append(args, m.Spec.Args...)
 
-	env := []corev1.EnvVar{}
+	var env []corev1.EnvVar
 
 	if m.Spec.Adapters != nil {
 		args = append(args, "--enable-lora")
@@ -118,7 +118,7 @@ func (r *ModelReconciler) vLLMPodForModel(m *kubeaiv1.Model, c ModelConfig) *cor
 						SuccessThreshold: 1,
 						ProbeHandler: corev1.ProbeHandler{
 							HTTPGet: &corev1.HTTPGetAction{
-								Path: "/health",
+								Path: "/health", // "/ready" with recent vllm versions (not v0.6.x)
 								Port: intstr.FromString("http"),
 							},
 						},

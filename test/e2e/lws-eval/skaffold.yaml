@@ -1,0 +1,38 @@
+apiVersion: skaffold/v4beta11
+kind: Config
+metadata:
+  name: kubeai-autoscaler-restart-test
+build:
+  artifacts:
+    - image: substratusai/kubeai
+  local:
+    push: false
+deploy:
+  helm:
+    releases:
+#      - name: gpu-operator
+#        remoteChart: oci://ghcr.io/run-ai/fake-gpu-operator/fake-gpu-operator
+#        version: v0.0.60
+#        namespace: gpu-operator
+#        createNamespace: true
+#        setValues:
+#          topology.nodePools.default.gpuCount: 8
+#          topology.nodePoolLabelKey: run.ai/simulated-gpu-node-pool
+      - name: lws
+        remoteChart: oci://registry.k8s.io/lws/charts/lws
+        version: 0.6.1
+        namespace: default # lws-system
+        createNamespace: true
+      #        wait: true
+      #        timeout: 300s
+      - name: kubeai
+        chartPath: ./charts/kubeai
+        valuesFiles:
+          - ./test/e2e/autoscaler-restart-no-load/values.yaml
+        skipBuildDependencies: true
+portForward:
+  - resourceType: service
+    resourceName: kubeai
+    namespace: default
+    port: 80
+    localPort: 8000

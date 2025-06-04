@@ -2,8 +2,8 @@ package loadbalancer
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 
@@ -17,6 +17,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 func New(mgr ctrl.Manager) (*LoadBalancer, error) {
@@ -91,13 +92,20 @@ func (r *LoadBalancer) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Re
 	if err := r.List(ctx, &podList, client.InNamespace(pod.Namespace), client.MatchingLabels{v1.PodModelLabel: modelName}); err != nil {
 		return ctrl.Result{}, fmt.Errorf("listing matching pods: %w", err)
 	}
-
+	logger := log.FromContext(ctx)
 	observedEndpoints := map[string]endpoint{}
 	for _, pod := range podList.Items {
 		if _, exclude := r.ExcludePods[pod.Name]; exclude {
+			logger.Info("+++ Skipping excluded pod", "name", pod.Name)
+			continue
+		}
+		// todo (Alex): exclude via label or include via a new label instead?
+		if v, ok := pod.Labels["kubeai.org/group-role"]; ok && v == "worker" {
+			logger.Info("+++ Skipping worker pod", "name", pod.Name)
 			continue
 		}
 		if !k8sutils.PodIsReady(&pod) {
+			logger.Info("+++ Skipping unready pod", "name", pod.Name)
 			continue
 		}
 
@@ -105,7 +113,7 @@ func (r *LoadBalancer) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Re
 		// to communicate the port that the given backend listens on.
 		port := getPodAnnotation(pod, v1.ModelPodPortAnnotation)
 		if port == "" {
-			log.Printf("ERROR: No port annotation %q found for pod %s, skipping", v1.ModelPodPortAnnotation, pod.Name)
+			logger.Error(errors.New("no port annotation found, skipping"), "name", pod.Name)
 			continue
 		}
 
@@ -117,6 +125,7 @@ func (r *LoadBalancer) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Re
 
 		// If the pod has no IP address, skip it.
 		if ip == "" {
+			logger.Error(errors.New("no IP address found, skipping"), "name", pod.Name)
 			continue
 		}
 
@@ -135,7 +144,7 @@ func (r *LoadBalancer) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Re
 		return ctrl.Result{}, fmt.Errorf("getting model %s: %w", modelName, err)
 	}
 	r.getOrCreateEndpointGroup(modelName, model.Spec.LoadBalancing).reconcileEndpoints(observedEndpoints)
-
+	logger.Info("+++ Reconciled endpoints", "modelName", modelName, "endpoints", observedEndpoints, "podList", len(podList.Items))
 	return ctrl.Result{}, nil
 }
 
