@@ -6,28 +6,7 @@ spec:
   features: [TextGeneration]
   url: hf://facebook/opt-125m
   engine: VLLM
-  args:
-    - --chat-template=/config/chat-template.jinja
   minReplicas: 0
   resourceProfile: cpu:1:2 # group size=2
-  files:
-    - content: |-
-        {% for message in messages %}
-        {% if message['role'] == 'user' %}
-        {{ 'Question:
-        ' + message['content'] + '
-
-        ' }}{% elif message['role'] == 'system' %}
-        {{ 'System:
-        ' + message['content'] + '
-
-        ' }}{% elif message['role'] == 'assistant' %}{{ 'Answer:
-        '  + message['content'] + '
-
-        ' }}{% endif %}
-        {% if loop.last and add_generation_prompt %}
-        {{ 'Answer:
-        ' }}{% endif %}{% endfor %}
-      path: /config/chat-template.jinja
   # Scale down immediately after autoscaler window drops.
   scaleDownDelaySeconds: 0

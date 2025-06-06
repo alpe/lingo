@@ -31,6 +31,7 @@ fi
 
 # Function to handle errors
 error_handler() {
+    echo "++++++++++++++"
     echo "Tests failed. Printing logs..."
     if [ -f $skaffold_log_file ]; then
         echo "--- Skaffold Logs ---"
@@ -45,10 +46,17 @@ error_handler() {
     echo "--- Models ---"
     kubectl get crds models.kubeai.org && kubectl get models -oyaml
     echo "--- Model Logs ---"
-    kubectl logs -l app=model --tail -1
+    kubectl logs -l app=model --tail
     echo "--- Describe Model Pods ---"
     kubectl describe pod -l app=model
-    echo "!!! FAIL !!!"
+    echo "
+    ███████╗ █████╗ ██╗██╗     ██╗
+    ██╔════╝██╔══██╗██║██║     ██║
+    █████╗  ███████║██║██║     ██║
+    ██╔══╝  ██╔══██║██║██║     ██║
+    ██║     ██║  ██║██║███████╗███████╗
+    ╚═╝     ╚═╝  ╚═╝╚═╝╚══════╝╚══════╝
+    "
     exit 1
 }
 trap 'error_handler' ERR
@@ -100,4 +108,10 @@ kubectl apply -f $REPO_DIR/test/e2e/common-manifests.yaml
 
 $REPO_DIR/test/e2e/$testcase/test.sh
 
-echo "!!! PASS !!!"
+echo "
+ ____    _    ____ ____  
+|  _ \  / \  / ___/ ___| 
+| |_) |/ _ \ \___ \___ \ 
+|  __// ___ \ ___) |__) |
+|_|  /_/   \_\____/____/ 
+"

@@ -186,9 +186,15 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res 
 		}
 	}()
 
-	plan, err := r.calculatePodPlan(observedPods, model, modelConfig)
+	var plan ExecutablePlan
+	if modelConfig.LWSConfig != nil {
+		plan, err = r.calculateLWSPlan(observedPods, model, modelConfig)
+	} else {
+		plan, err = r.calculatePodPlan(observedPods, model, modelConfig)
+	}
+
 	if err != nil {
-		log.Error(err, "Failed to calculate pod plan")
+		log.Error(err, "Failed to calculate plan")
 		return ctrl.Result{}, nil
 	}
 

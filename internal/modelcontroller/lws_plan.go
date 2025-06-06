@@ -20,6 +20,12 @@ import (
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 )
 
+const LabelGroupRole = "kubeai.org/group-role"
+const (
+	GroupRoleHead   = "head"
+	GroupRoleWorker = "worker"
+)
+
 // calculateLWSPlan calculates the LeaderWorkerSet plan for the given Model.
 // It assumes the list of Pods represents an accurate snapshot of the current state.
 // It returns a plan that contains LeaderWorkerSets to create and delete.
@@ -27,22 +33,20 @@ func (r *ModelReconciler) calculateLWSPlan(allObservedPods *corev1.PodList, mode
 	if config.LWSConfig.groupSize < 2 {
 		return nil, fmt.Errorf("LWS group size must be greater than 1")
 	}
+
 	var observedHeadPods []*corev1.Pod
 	var groupIndex = make(map[string][]*corev1.Pod)
 	for _, pod := range allObservedPods.Items {
 		// Group pods by their leader worker set name
-		groupName := pod.Labels["leaderworkerset.sigs.k8s.io/name"]
+		groupName := pod.Labels[lwsv1.SetNameLabelKey]
 		groupIndex[groupName] = append(groupIndex[groupName], &pod)
 
-		if pod.Labels["kubeai.org/group-role"] == "head" {
+		if pod.Labels[LabelGroupRole] == GroupRoleHead {
 			observedHeadPods = append(observedHeadPods, &pod)
 		}
 	}
 
-	plan := &LSWPlan{
-		model:   model,
-		details: make([]string, 0),
-	}
+	plan := &LSWPlan{model: model, details: make([]string, 0)}
 
 	// If there are no pods, create a new LeaderWorkerSet
 	//if len(observedHeadPods.Items) == 0 {
@@ -77,25 +81,22 @@ func (r *ModelReconciler) calculateLWSPlan(allObservedPods *corev1.PodList, mode
 		}
 	case replicaDiff > 0:
 		// Delete Pods.
-		plan.details = append(plan.details, fmt.Sprintf("Deleting %d LWS", replicaDiffAbs))
+		plan.details = append(plan.details, fmt.Sprintf("Deleting %d LWS from %d", replicaDiffAbs, len(observedHeadPods)))
 		toDeleteCount := replicaDiffAbs
+		var lwsList lwsv1.LeaderWorkerSetList
+		if err := r.Client.List(context.Background(), &lwsList, client.MatchingLabels{"model": model.Name}, client.InNamespace(model.Namespace)); err != nil {
+			if apierrors.IsNotFound(err) {
+				//logger.Info("LeaderWorkerSet already deleted", "name", lws.Name)
+				return plan, nil
+			}
+			return nil, fmt.Errorf("listing LeaderWorkerSets: %w", err)
+		}
 
-		for _, pod := range observedHeadPods {
+		for _, lws := range lwsList.Items {
 			if toDeleteCount == 0 {
 				break
 			}
-			// todo (Alex): avoid n+1 finder problem
-			groupName := pod.Labels["leaderworkerset.sigs.k8s.io/name"]
-			var lwsList lwsv1.LeaderWorkerSetList
-			if err := r.Client.List(context.Background(), &lwsList, client.MatchingLabels{"leaderworkerset.sigs.k8s.io/name": groupName}); err != nil {
-				if apierrors.IsNotFound(err) {
-					continue
-				}
-				return nil, fmt.Errorf("listing LeaderWorkerSets: %w", err)
-			}
-			if len(lwsList.Items) == 0 {
-				continue
-			}
+			groupName := lws.Labels[lwsv1.SetNameLabelKey]
 			plan.toDeleteLWS = append(plan.toDeleteLWS, &lwsList.Items[0])
 			plan.toDeletePods = append(plan.toDeletePods, groupIndex[groupName]...)
 			toDeleteCount--
@@ -118,18 +119,15 @@ type LSWPlan struct {
 // execute implements the ExecutablePlan interface.
 // It creates and deletes LeaderWorkerSets according to the plan.
 // It returns the added and removed Pods, which will be empty for LeaderWorkerSets.
-func (lp *LSWPlan) execute(ctx context.Context, client client.Client, scheme *runtime.Scheme) (added, removed []*corev1.Pod, err error) {
+func (lp *LSWPlan) execute(ctx context.Context, k8sClient client.Client, scheme *runtime.Scheme) (added, removed []*corev1.Pod, err error) {
 	logger := log.FromContext(ctx)
 	detailsCSV := strings.Join(lp.details, ", ")
-	logger.Info("Executing LeaderWorkerSet plan", "modelName", lp.model.Name, "details", detailsCSV)
-
-	if len(lp.toCreateLWS) == 0 && len(lp.toDeleteLWS) == 0 {
-		return nil, nil, nil
-	}
+	logger.Info("Executing LeaderWorkerSet plan", "modelName", lp.model.Name, "details", detailsCSV, "to-delete", len(lp.toDeleteLWS))
 
 	// Delete LeaderWorkerSets
 	for _, lws := range lp.toDeleteLWS {
-		if err := client.Delete(ctx, lws); err != nil {
+		logger.Info("Deleting LeaderWorkerSet", "name", lws.Name)
+		if err := k8sClient.Delete(ctx, lws); err != nil {
 			if apierrors.IsNotFound(err) {
 				logger.Info("LeaderWorkerSet already deleted", "name", lws.Name)
 			} else {
@@ -144,7 +142,7 @@ func (lp *LSWPlan) execute(ctx context.Context, client client.Client, scheme *ru
 		//if err := ctrl.SetControllerReference(lp.model, lws, scheme); err != nil {
 		//	return nil, nil, fmt.Errorf("setting controller reference for LeaderWorkerSet: %w", err)
 		//}
-		if err := client.Create(ctx, lws, k8sutils.DefaultCreateOptions()); err != nil {
+		if err := k8sClient.Create(ctx, lws, k8sutils.DefaultCreateOptions()); err != nil {
 			if apierrors.IsAlreadyExists(err) {
 				logger.Info("LeaderWorkerSet already exists", "name", lws.Name)
 			} else {
@@ -153,7 +151,8 @@ func (lp *LSWPlan) execute(ctx context.Context, client client.Client, scheme *ru
 		}
 		// LeaderWorkerSets manage their own pods, this query might be too early though
 		var lwsPods corev1.PodList
-		if err := client.List(ctx, &lwsPods); err != nil && !apierrors.IsNotFound(err) {
+		err := k8sClient.List(ctx, &lwsPods, client.InNamespace(lws.Namespace), client.MatchingLabels{lwsv1.SetNameLabelKey: lws.Name}) // todo: by group index
+		if err != nil && !apierrors.IsNotFound(err) {
 			return nil, nil, fmt.Errorf("list pods for LeaderWorkerSet: %w", err)
 		}
 		for _, pod := range lwsPods.Items {
@@ -177,10 +176,9 @@ func (r *ModelReconciler) buildLeaderWorkerSet(model *kubeaiv1.Model, modelConfi
 	}
 
 	expectedHash := k8sutils.PodHash(podForModel.Spec)
-	podForModel.GenerateName = fmt.Sprintf("model-%s-%s-", model.Name, expectedHash)
+	podForModel.GenerateName = fmt.Sprintf("model-%s-%s", model.Name, expectedHash)
 	k8sutils.SetLabel(podForModel, kubeaiv1.PodHashLabel, expectedHash)
 
-	svcName := model.Name + "." + model.Namespace + ".svc.cluster.local" // headless service created by the lws controller
 	manifestName := model.Name
 	lbs := labelsForModel(model)
 	ann := map[string]string{
@@ -189,11 +187,12 @@ func (r *ModelReconciler) buildLeaderWorkerSet(model *kubeaiv1.Model, modelConfi
 	}
 
 	leaderPod := podForModel.DeepCopy()
-	leaderPod.ObjectMeta.Labels["kubeai.org/group-role"] = "head"
+	leaderPod.ObjectMeta.Labels[LabelGroupRole] = GroupRoleHead
 	leaderPod.Spec.Containers[0].Env = append(leaderPod.Spec.Containers[0].Env,
 		corev1.EnvVar{Name: "LWS_GROUP_SIZE", Value: strconv.Itoa(modelConfig.LWSConfig.groupSize)},
-		corev1.EnvVar{Name: "LWS_LEADER_ADDRESS", Value: svcName},
-		corev1.EnvVar{Name: "NODE_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "spec.nodeName"}}}, //used by fake-gpu
+		corev1.EnvVar{Name: "LWS_HEAD_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"}}},
+		corev1.EnvVar{Name: "K8S_NAMESPACE", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"}}},
+		//corev1.EnvVar{Name: "NODE_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "spec.nodeName"}}}, //used by fake-gpu
 	)
 	args := append(leaderPod.Spec.Containers[0].Args,
 		fmt.Sprintf("--tensor-parallel-size=%d", modelConfig.LWSConfig.tensorParallel),
@@ -204,7 +203,7 @@ func (r *ModelReconciler) buildLeaderWorkerSet(model *kubeaiv1.Model, modelConfi
 		leaderPod.Spec.Containers[0].Command = []string{
 			"sh",
 			"-c",
-			//"bash /vllm-workspace/examples/online_serving/multi-node-serving.sh leader --ray_address=$(LWS_LEADER_ADDRESS) --ray_cluster_size=$(LWS_GROUP_SIZE); " +
+			//`bash /vllm-workspace/examples/online_serving/multi-node-serving.sh leader --ray_address="$(LWS_HEAD_NAME).pod.${K8S_NAMESPACE}.cluster.local"" --ray_cluster_size=$(LWS_GROUP_SIZE); ` +
 			//"bash /vllm-workspace/examples/online_serving/multi-node-serving.sh leader --ray_cluster_size=$(LWS_GROUP_SIZE); " +
 			//leaderPod.Spec.Containers[0].Command[0] + " " + strings.Join(args, " "),
 			//"echo ${LWS_LEADER_ADDRESS}; while true; do echo \"HTTP/1.1 200 OK\n\n\" | nc -l 8000; done",
@@ -213,11 +212,11 @@ func (r *ModelReconciler) buildLeaderWorkerSet(model *kubeaiv1.Model, modelConfi
 	}
 	// setup worker
 	workerPod := podForModel.DeepCopy()
-	workerPod.ObjectMeta.Labels["kubeai.org/group-role"] = "worker"
+	workerPod.ObjectMeta.Labels[LabelGroupRole] = GroupRoleWorker
 	delete(workerPod.ObjectMeta.Labels, "model") // only head pod has this label
 	workerPod.Spec.Containers[0].Env = append(workerPod.Spec.Containers[0].Env,
-		corev1.EnvVar{Name: "LWS_LEADER_ADDRESS", Value: svcName},
-		corev1.EnvVar{Name: "NODE_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "spec.nodeName"}}}, //used by fake-gpu
+		corev1.EnvVar{Name: "LWS_HEAD_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: fmt.Sprintf("metadata.annotations['%s']", lwsv1.LeaderPodNameAnnotationKey)}}},
+		//corev1.EnvVar{Name: "NODE_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "spec.nodeName"}}}, //used by fake-gpu
 	)
 	if false { // revisit when GPU test env is available
 		workerPod.Spec.Containers[0].Command = []string{

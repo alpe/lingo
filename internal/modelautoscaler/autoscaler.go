@@ -155,7 +155,11 @@ func (a *Autoscaler) Start(ctx context.Context) {
 			ceil := math.Ceil(normalized)
 			log.Printf("Calculated target replicas for model %q: ceil(%v/%v) = %v, current requests: sum(%v) = %v, history: %v",
 				m.Name, avgActiveRequests, *m.Spec.TargetRequests, ceil, activeRequests, activeRequestSum, avg.History())
-			a.modelClient.Scale(ctx, &m, int32(ceil), a.cfg.RequiredConsecutiveScaleDowns(*m.Spec.ScaleDownDelaySeconds))
+
+			err = a.modelClient.Scale(ctx, &m, int32(ceil), a.cfg.RequiredConsecutiveScaleDowns(*m.Spec.ScaleDownDelaySeconds))
+			if err != nil {
+				log.Printf("Failed to scale model %q: %v", m.Name, err)
+			}
 
 			nextModelState.Models[m.Name] = modelState{
 				AverageActiveRequests: avgActiveRequests,

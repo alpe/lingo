@@ -29,10 +29,7 @@ type ExecutablePlan interface {
 // - Adds a surge Pod
 // - Recreates any out-of-date Pod that is not Ready immediately
 // - Waits for all Pods to be Ready before recreating any out-of-date Pods that are Ready
-func (r *ModelReconciler) calculatePodPlan(allPods *corev1.PodList, model *kubeaiv1.Model, modelConfig ModelConfig) (ExecutablePlan, error) {
-	if modelConfig.LWSConfig != nil {
-		return r.calculateLWSPlan(allPods, model, modelConfig)
-	}
+func (r *ModelReconciler) calculatePodPlan(allPods *corev1.PodList, model *kubeaiv1.Model, modelConfig ModelConfig) (*podPlan, error) {
 	var podForModel *corev1.Pod
 
 	switch model.Spec.Engine {
