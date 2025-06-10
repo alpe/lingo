@@ -18,7 +18,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
+// ExecutablePlan brings the system into the dired state
 type ExecutablePlan interface {
+	// todo (Alex): with the refactorings, what are the values needed in return? pods does not fit well for lws or deployments
 	execute(ctx context.Context, client client.Client, scheme *runtime.Scheme) (added, removed []*corev1.Pod, err error)
 }
 

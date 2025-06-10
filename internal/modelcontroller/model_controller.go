@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"reflect"
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -205,29 +204,7 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res 
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("executing pod plan: %w", err)
 	}
-	//runningPods := append(diff(observedPods, deletedPods), addedPods...)
-	//if err := r.reconcileAdapters(ctx, runningPods, model.Spec.Adapters); err != nil {
-	//	if errors.Is(err, errReturnEarly) {
-	//		return ctrl.Result{}, nil
-	//	}
-	//	return ctrl.Result{}, fmt.Errorf("reconciling adapters: %w", err)
-	//}
-
 	return ctrl.Result{}, nil
-}
-
-func diff(allPods *corev1.PodList, deletedPods []*corev1.Pod) []*corev1.Pod {
-	toRemain := make([]*corev1.Pod, len(allPods.Items)) // not adding created pods here to let cache sync
-	for i, pod := range allPods.Items {
-		toRemain[i] = &pod
-	}
-	for _, deletedPod := range deletedPods {
-		i := slices.IndexFunc(toRemain, func(p *corev1.Pod) bool { return p.Name == deletedPod.Name })
-		if i >= 0 {
-			toRemain = slices.Delete(toRemain, i, i+1)
-		}
-	}
-	return toRemain
 }
 
 // SetupWithManager sets up the controller with the Manager.

@@ -7,8 +7,6 @@ const (
 	// needs to be recreated.
 	PodHashLabel = "pod-hash"
 
-	HashLabel = "kubeai.org/hash"
-
 	ModelFeatureLabelDomain = "features.kubeai.org"
 
 	// ModelPodIPAnnotation is the annotation key used to specify an IP
