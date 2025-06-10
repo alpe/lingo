@@ -52,7 +52,7 @@ func (r *ModelReconciler) calculatePodPlan(allPods *corev1.PodList, model *kubea
 	k8sutils.SetLabel(podForModel, kubeaiv1.PodHashLabel, expectedHash)
 
 	var (
-		readyAll  int
+		readyAll  int32
 		outOfDate []corev1.Pod
 	)
 
@@ -69,6 +69,8 @@ func (r *ModelReconciler) calculatePodPlan(allPods *corev1.PodList, model *kubea
 			outOfDate = append(outOfDate, p)
 		}
 	}
+	model.Status.Replicas.All = int32(len(allPods.Items))
+	model.Status.Replicas.Ready = readyAll
 
 	var (
 		details  []string
@@ -125,7 +127,7 @@ func (r *ModelReconciler) calculatePodPlan(allPods *corev1.PodList, model *kubea
 			}
 			continue
 		}
-		if readyAll == int(desiredReplicas) {
+		if readyAll == desiredReplicas {
 			details = append(details, fmt.Sprintf("All Pods ready, recreating out-of-date Pod %q", pod.Name))
 			appendToDelete(pod)
 			// Avoid recreating the surge Pod when rollout is complete.
