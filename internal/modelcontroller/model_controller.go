@@ -172,9 +172,11 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res 
 			readyPods++
 		}
 	}
-	model.Status.Replicas.All = int32(len(observedPods.Items))
-	model.Status.Replicas.Ready = readyPods
-
+	if modelConfig.LWSConfig == nil {
+		// todo (Alex): mave to plan
+		model.Status.Replicas.All = int32(len(observedPods.Items))
+		model.Status.Replicas.Ready = readyPods
+	}
 	scaled := false
 	defer func() {
 		if scaled {
@@ -188,7 +190,7 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res 
 
 	var plan ExecutablePlan
 	if modelConfig.LWSConfig != nil {
-		plan, err = r.calculateLWSPlan(observedPods, model, modelConfig)
+		plan, err = r.calculateLWSPlan(ctx, model, modelConfig)
 	} else {
 		plan, err = r.calculatePodPlan(observedPods, model, modelConfig)
 	}
@@ -203,13 +205,13 @@ func (r *ModelReconciler) Reconcile(ctx context.Context, req ctrl.Request) (res 
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("executing pod plan: %w", err)
 	}
-	runningPods := append(diff(observedPods, deletedPods), addedPods...)
-	if err := r.reconcileAdapters(ctx, runningPods, model.Spec.Adapters); err != nil {
-		if errors.Is(err, errReturnEarly) {
-			return ctrl.Result{}, nil
-		}
-		return ctrl.Result{}, fmt.Errorf("reconciling adapters: %w", err)
-	}
+	//runningPods := append(diff(observedPods, deletedPods), addedPods...)
+	//if err := r.reconcileAdapters(ctx, runningPods, model.Spec.Adapters); err != nil {
+	//	if errors.Is(err, errReturnEarly) {
+	//		return ctrl.Result{}, nil
+	//	}
+	//	return ctrl.Result{}, fmt.Errorf("reconciling adapters: %w", err)
+	//}
 
 	return ctrl.Result{}, nil
 }
@@ -236,6 +238,7 @@ func (r *ModelReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Pod{}).
 		Owns(&corev1.PersistentVolumeClaim{}).
 		Owns(&batchv1.Job{}).
+		Owns(&lwsv1.LeaderWorkerSet{}).
 		Complete(r)
 }
 

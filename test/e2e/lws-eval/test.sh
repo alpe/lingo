@@ -27,11 +27,9 @@ kubectl apply -f $TEST_DIR/model.yaml
 kubectl wait --timeout=3m --for=condition=Ready pod/k6
 
 kubectl wait --timeout=3m --for=create pod/opt-125m-cpu-0
-kubectl wait --timeout=3m --for=condition=Ready pod/opt-125m-cpu-0
-kubectl wait --timeout=60s --for=jsonpath='{.status.replicas}'>0 model/$model
+kubectl wait --timeout=4m --for=condition=Ready pod/opt-125m-cpu-0
+kubectl wait --timeout=60s --for=jsonpath='{.spec.replicas}'=2 model/$model
 
-
-sleep 200 # todo (Alex): setup better condition
 # Stop load generation pod.
 kubectl delete --now -f $TEST_DIR/k6-pod.yaml || true
 
@@ -39,6 +37,4 @@ kubectl delete --now -f $TEST_DIR/k6-pod.yaml || true
 kubectl delete pods -l app.kubernetes.io/name=kubeai || true
 echo "pod deletion done"
 # Model should be scaled down.
-kubectl  get model/$model -o yaml
 kubectl wait --timeout=60s --for=jsonpath='{.spec.replicas}'=0 model/$model
-sleep 220s

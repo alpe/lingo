@@ -232,6 +232,14 @@ func Run(ctx context.Context, k8sCfg *rest.Config, cfg config.System) error {
 	if err = modelReconciler.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create Model controller: %w", err)
 	}
+	podReconciler := &modelcontroller.AdaptersPodReconciler{
+		Client:        mgr.GetClient(),
+		Scheme:        mgr.GetScheme(),
+		AdapterSource: modelReconciler,
+	}
+	if err = podReconciler.SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("unable to create pod controller: %w", err)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

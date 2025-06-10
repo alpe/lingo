@@ -46,6 +46,7 @@ type LoadBalancer struct {
 
 func (r *LoadBalancer) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
+		Named("load-balancer-pod-controller").
 		WithOptions(controller.Options{NeedLeaderElection: ptr.To(false)}).
 		For(&corev1.Pod{}).
 		Complete(r)
